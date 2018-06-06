@@ -1,0 +1,9 @@
+[mysqld]
+skip-grant-tables
+datadir=/var/lib/mysql
+socket=/tmp/mysql.sock
+bind-address = 127.0.0.1
+open_files_limit = 16384
+symbolic-links=0
+sql_mode=NO_ENGINE_SUBSTITUTION,STRICT_TRANS_TABLES
+max_allowed_packet = 16M

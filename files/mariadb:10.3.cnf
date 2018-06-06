@@ -1,0 +1,33 @@
+[mysqld]
+skip-grant-tables
+skip-networking
+datadir=/var/lib/mysql
+socket=/tmp/mysql.sock
+bind-address = 127.0.0.1
+open_files_limit = 16384
+log_bin                 = mariadb-bin
+log_bin_index           = mariadb-bin.index
+expire_logs_days        = 2
+max_binlog_size         = 1024M
+relay_log               = relay-bin
+relay_log_index         = relay-bin.index
+binlog_format = ROW
+default_storage_engine  = InnoDB
+innodb_buffer_pool_size = 2G
+innodb_buffer_pool_instances      = 2
+innodb-flush-log-at-trx-commit = 0
+innodb_log_buffer_size  = 4M
+innodb_file_per_table   = 1
+innodb_max_dirty_pages_pct        = 80
+innodb_flush_log_at_trx_commit    = 0
+innodb_lock_wait_timeout = 900
+innodb_thread_concurrency = 40
+innodb_autoinc_lock_mode = 1
+innodb_fast_shutdown              = 1
+innodb_max_purge_lag              = 0
+innodb_open_files       = 40960
+innodb_io_capacity      = 400
+innodb_flush_method     = O_DIRECT
+symbolic-links=0
+sql_mode=NO_ENGINE_SUBSTITUTION,STRICT_TRANS_TABLES
+max_allowed_packet = 16M

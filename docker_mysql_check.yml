@@ -1,0 +1,360 @@
+---
+- hosts: all
+  tasks:
+
+### Making dirs and setting variables ###
+  - set_fact: container_name="{{ group_names[0] }}-{{ inventory_hostname }}-{{ ansible_date_time.iso8601_basic_short }}"
+  - set_fact: backup_directory="/backup/{{ group_names[0] }}_chroot/backup/{{ inventory_hostname }}/xtrabackup/"
+  - set_fact: check_directory="/backup/check_backup/{{ container_name }}"
+  - set_fact: random_port="42{{ 999 | random }}"
+  - set_fact: logs_remote_directory="/backup/check_backup/logs"
+  - set_fact: logs_directory="logs/check_xtrabackup"
+  - set_fact: report_remote_directory="/backup/check_backup/reports"
+  - set_fact: report_remote_file="{{ report_remote_directory }}/{{ container_name }}.report.html"
+  - set_fact: report="{{ logs_directory }}/{{ backup_server }}.report.html"
+
+  - file: path="{{ check_directory }}" state=directory recurse=yes
+    delegate_to: "{{ backup_server }}"
+  - file: path="/root/scripts" state=directory recurse=yes
+  - file: path="/root/.my.cnf" state=touch
+  - file: path="/root/scripts" state=directory recurse=yes
+    delegate_to: "{{ backup_server }}"
+  - file: path="{{ logs_remote_directory }}/{{ group_names[0] }}" state=directory recurse=yes
+    delegate_to: "{{ backup_server }}"
+  - local_action: file path="{{ logs_directory }}" state=directory mode=0755
+    become: no
+  - file: path="{{ report_remote_directory }}" state=directory recurse=yes
+    delegate_to: "{{ backup_server }}"
+
+  - copy: src="files/mysql_ver_docker.sh" dest="/root/scripts/mysql_ver_docker.sh" mode="u+x" force=yes
+  - shell: /bin/bash /root/scripts/mysql_ver_docker.sh
+    register: mysql_version
+
+  - debug: msg="{{ mysql_version.stdout }}"
+
+  - copy: src="files/os_ver_docker.sh" dest="/root/scripts/os_ver_docker.sh" mode="u+x"
+    delegate_to: "{{ backup_server }}"
+  - shell: /root/scripts/os_ver_docker.sh
+    delegate_to: "{{ backup_server }}"
+    register: os_check
+
+  - debug: msg="{{ os_check.stdout }}"
+
+### Installing/checking the Docker on the backup server and starting it up ###
+# No OS supported #
+  - local_action: shell printf "<meta charset="utf-8">\n<div align="center" style="background-color:#ff0000"><h3>Неподдерживаемая ОС на бэкапном сервере <i><b>{{ backup_server }}</b></i></h3></div>\n" >> "{{ report }}"
+    become: no
+    when: os_check.stdout == "unknown_os"
+  - fail: msg="Unknown OS on backup_server!"
+    when: os_check.stdout == "unknown_os"
+
+# Debian-based #
+  - name: DEBIAN or UBUNTU! Check if docker is installed
+    command: dpkg-query -l docker
+    when: (os_check.stdout == "deb")
+    delegate_to: "{{ backup_server }}"
+    register: deb_check
+    failed_when: no
+
+  - apt: update_cache=yes
+    when: os_check.stdout == "deb"
+    delegate_to: "{{ backup_server }}"
+    register: apt_cache_check
+    failed_when: no
+
+  - local_action: shell printf "<meta charset="utf-8">\n<div align="center" style="background-color:#ff0000"><h3>Обрати внимание на <i><b>{{ backup_server }}</b></i> скорее всего сломался apt cache update</h3></div>\n" >> "{{ report }}"
+    become: no
+    when: apt_cache_check|failed
+
+  - name: Debian and Ubuntu - ensure docker and dependencies are installed
+    apt: name={{item}} state=installed
+    with_items:
+      - docker
+      - docker.io
+      - python-pip
+      - python3-pip
+    delegate_to: "{{ backup_server }}"
+    register: deb_docker_installed
+    ignore_errors: yes
+    when: (os_check.stdout == "deb") and
+          (deb_check.rc == 1)
+
+# Centos #
+  - name: CENTOS 7! Check if docker is installed
+    command: rpm -q docker
+    when: os_check.stdout == "centos7"
+    delegate_to: "{{ backup_server }}"
+    register: rpm7_check
+    failed_when: no
+
+  - name: CENTOS 6! Check if docker is installed
+    command: rpm -q docker-io
+    when: os_check.stdout == "centos6"
+    delegate_to: "{{ backup_server }}"
+    register: rpm6_check
+    failed_when: no
+
+  - name: Centos - install docker
+    yum: name={{item}} state=installed
+    with_items:
+      - docker
+      - python-pip
+    delegate_to: "{{ backup_server }}"
+    register: centos7_docker_installed
+    ignore_errors: yes
+    when: (os_check.stdout == "centos7") and 
+          (rpm7_check.rc == 1)
+
+  - name: Centos - install docker
+    yum: name={{item}} state=installed
+    with_items:
+      - docker-io
+      - python-pip
+    delegate_to: "{{ backup_server }}"
+    register: centos6_docker_installed
+    ignore_errors: yes
+    when: (os_check.stdout == "centos6") and
+          (rpm6_check.rc == 1)
+
+  - name: Working around docker-py
+    pip: name=docker-py state=present version=1.10.6
+    register: docker_py
+    delegate_to: "{{ backup_server }}"
+
+  - local_action: shell printf "<meta charset="utf-8">\n<div align="center" style="background-color:#F08080"><h3>Не удалось установить или запустить docker-py на бэкапном сервере <i><b>{{ backup_server }}</b></i>. Надо срочно починить!</h3></div>\n" >> "{{ report }}"
+    become: no
+    when: (docker_py.state is not defined) or (docker_py.state != "present")
+  - fail: msg="Seems docker-py didn't installed on "{{ backup_server }}"!"
+    when: (docker_py.state is not defined) or (docker_py.state != "present")
+
+  - service: name=docker state=started
+    register: docker_service
+    ignore_errors: yes
+    delegate_to: "{{ backup_server }}"
+
+  - debug: msg="{{ deb_docker_installed }}"
+
+  - local_action: shell printf "<meta charset="utf-8">\n<div align="center" style="background-color:#F08080"><h3>Не удалось установить или запустить docker на бэкапном сервере <i><b>{{ backup_server }}</b></i>. Надо срочно починить!</h3></div>\n" >> "{{ report }}"
+    become: no
+    when: (deb_docker_installed.failed is defined and deb_docker_installed.failed == true) or 
+          (centos6_docker_installed.failed is defined and centos6_docker_installed.failed == true) or 
+          (centos7_docker_installed.failed is defined and centos7_docker_installed.failed == true) or
+          (docker_service.state is not defined) or (docker_service.state != "started")
+  - fail: msg="Docker problems on "{{ backup_server }}"!"
+    when: (deb_docker_installed.failed is defined and deb_docker_installed.failed == true) or 
+          (centos6_docker_installed.failed is defined and centos6_docker_installed.failed == true) or 
+          (centos7_docker_installed.failed is defined and centos7_docker_installed.failed == true) or
+          (docker_service.state is not defined) or (docker_service.state != "started")
+
+### Finding latest backup and restoring it ###
+  - name: Check if backups are on server
+    find: paths="{{ backup_directory }}" patterns='*.tgz'
+    register: found_files
+    delegate_to: "{{ backup_server }}"
+
+  - name: Get latest file
+    set_fact: latest_backup="{{ found_files.files | sort(attribute='mtime',reverse=true) | first }}"
+    delegate_to: "{{ backup_server }}"
+
+  - debug: msg="{{ latest_backup.path }}"
+  - debug: msg="{{ latest_backup.size }}"
+
+  - name: Taking files out of the archive
+    unarchive:
+      remote_src: yes
+      src: "{{ latest_backup.path }}"
+      dest: "{{ check_directory }}"
+      extra_opts: "--ignore-zeros"
+    delegate_to: "{{ backup_server }}"
+    register: untar
+    ignore_errors: yes
+
+  - file: path="{{ check_directory }}" state=absent
+    delegate_to: "{{ backup_server }}"
+    when: untar|failed
+  - file: path="{{ check_directory }}" state=directory owner=mysql group=mysql recurse=yes
+    delegate_to: "{{ backup_server }}"
+
+  - local_action: shell printf "<meta charset="utf-8">\n<div align="center" style="background-color:#F08080"><h3>Ошибка распаковки архива <i><b>{{ latest_backup.path }}</b></i> на бэкапном сервере <i><b>{{ backup_server }}</b></i></h3></div>\n" >> "{{ report }}"
+    become: no
+    when: untar|failed
+  - fail: msg="Extracting Archive FAILED on "{{ latest_backup.path }}"!"
+    when: untar|failed
+
+### Searching and changing MySQL settings
+  - copy: src="files/{{ mysql_version.stdout }}.cnf" dest="{{ check_directory }}/mysql_server.cnf"
+    delegate_to: "{{ backup_server }}"
+
+  - shell: mysql -Nse "show global variables like 'innodb_log_file_size';" | awk '{print $1" = "$2}' 
+    register: innodb_log_file_size
+    ignore_errors: yes
+  - shell: mysql -Nse "show global variables like 'innodb_data_file_path';" | awk '{print $1" = "$2}'
+    register: innodb_data_file_path
+    ignore_errors: yes
+  - shell: mysql -Nse "show global variables like 'innodb_log_block_size';" | awk '{print $1" = "$2}'
+    register: innodb_log_block_size
+    ignore_errors: yes
+
+  - lineinfile: path="{{ check_directory }}/mysql_server.cnf" state=present create=yes line="{{ innodb_log_file_size.stdout }}"
+    delegate_to: "{{ backup_server }}"
+  - lineinfile: path="{{ check_directory }}/mysql_server.cnf" state=present create=yes line="{{ innodb_data_file_path.stdout }}"
+    delegate_to: "{{ backup_server }}"
+  - lineinfile: path="{{ check_directory }}/mysql_server.cnf" state=present create=yes line="{{ innodb_log_block_size.stdout }}"
+    delegate_to: "{{ backup_server }}"
+
+### Making docker container up ###
+  - name: making a docker container in state up
+    docker:
+      name: "{{ container_name }}"
+      image: "backup-registry.itsumma.com:5000/{{ mysql_version.stdout }}"
+      ports: "0.0.0.0:{{ random_port }}:3306"
+      ulimits: nofile:102400:102400
+      env: MYSQL_ALLOW_EMPTY_PASSWORD=1
+      volumes: 
+        - "{{ check_directory }}:/var/lib/mysql" 
+        - "{{ check_directory }}/mysql_server.cnf:/etc/mysql/my.cnf"
+    when: os_check.stdout != "centos6"
+    delegate_to: "{{ backup_server }}"
+    failed_when: no
+
+  - shell: docker run -d --name {{ container_name }} -e MYSQL_ALLOW_EMPTY_PASSWORD=1 --ulimit nofile=102400:102400 -v "{{ check_directory }}:/var/lib/mysql" -v "{{ check_directory }}/mysql_server.cnf:/etc/mysql/my.cnf" -p {{ random_port }}:3306 backup-registry.itsumma.com:5000/{{ mysql_version.stdout }}
+    when: os_check.stdout == "centos6"
+    delegate_to: "{{ backup_server }}"
+    failed_when: no
+
+### Waiting for xtrabackup is making apply-log operation ###
+  - name: If xtrabackup apply-log is successfull, the file "{{ check_directory }}/itsumma.ok" appears.
+    wait_for:
+      path: "{{ check_directory }}/itsumma.ok"
+      delay: 10
+      timeout: 1800
+    delegate_to: "{{ backup_server }}"
+    register: xtrabackup
+    ignore_errors: yes
+
+  - debug: msg={{ xtrabackup.failed }}
+
+  - shell: cp "{{ check_directory }}/innobackupex.log" "{{ logs_remote_directory }}/{{ group_names[0] }}/{{ container_name }}_xtrabackup_error.log"
+    delegate_to: "{{ backup_server }}"
+    when: (xtrabackup.failed == true)
+  - local_action: shell printf "<meta charset="utf-8">\n<div align="center" style="background-color:#F08080"><h3>Ошибка при накатывании бинлогов у {{ group_names[0] }}_{{ inventory_hostname }}, обрати внимание на лог "{{ logs_remote_directory }}/{{ group_names[0] }}/{{ container_name }}_xtrabackup_error.log" на бэкапном сервере <i><b>{{ backup_server }}</b></i></h3></div>\n" >> "{{ report }}"
+    become: no
+    when: (xtrabackup.failed == true)
+  - fail: msg="Something wrong with container!"
+    when: (xtrabackup.failed == true)
+
+### Checking container status ###
+  - shell: 2>&1 docker inspect --format=\'\{\{.State.Running\}\}\' {{ container_name }} | grep -c true
+    delegate_to: "{{ backup_server }}"
+    register: container
+    ignore_errors: yes
+
+  - debug: msg={{ container.stdout }}
+
+  - shell: echo "{{ container_name }}" >> {{ logs_remote_directory }}/docker_error.log
+    delegate_to: "{{ backup_server }}"
+    when: (container.stdout == "0")
+
+  - shell: docker logs "{{ container_name }}" > "{{ logs_remote_directory }}/{{ group_names[0] }}/{{ container_name }}_error.log" 2>&1
+    delegate_to: "{{ backup_server }}"
+    when: (container.stdout == "0")
+
+  - local_action: shell printf "<meta charset="utf-8">\n<div align="center" style="background-color:#F08080"><h3>Ошибка при поднятии контейнера, обрати внимание на лог "{{ logs_remote_directory }}/{{ group_names[0] }}/{{ container_name }}_error.log" на бэкапном сервере <i><b>{{ backup_server }}</b></i></h3></div>\n" >> "{{ report }}"
+    become: no
+    when: (container.stdout == "0")
+  - fail: msg="Something wrong with container!"
+    when: (container.stdout == "0")
+
+### Prepairing report ###
+  - slurp: src=/root/.my.cnf
+    register: raw
+  - set_fact: mycnf="{{ raw['content']  | b64decode }}"
+  - lineinfile: path="{{ check_directory }}/my.cnf" state=present create=yes line="{{ mycnf }}"
+    delegate_to: "{{ backup_server }}"
+  - lineinfile: path="{{ check_directory }}/my.cnf" regexp='.*socket.*' state=absent
+    delegate_to: "{{ backup_server }}"
+
+  - shell: cat "{{ backup_directory }}/default_databaseslist.txt" | sed 's/Mb$//' > "{{ report_remote_directory }}/{{ container_name }}_source_db_list.txt"
+    delegate_to: "{{ backup_server }}"
+
+  - copy: src="files/mysql_docker_show_size.sh" dest="/root/scripts/mysql_docker_show_size.sh" mode="u+x"
+    delegate_to: "{{ backup_server }}"
+  - shell: "/root/scripts/mysql_docker_show_size.sh {{ container_name }}"
+    delegate_to: "{{ backup_server }}"
+
+  - copy: src="files/mysql_report_diff.sh" dest="/root/scripts/mysql_report_diff.sh" mode="u+x"
+    delegate_to: "{{ backup_server }}"
+  - shell: /root/scripts/mysql_report_diff.sh {{ container_name }} {{ group_names[0] }} {{ inventory_hostname }} {{ backup_server }}
+    delegate_to: "{{ backup_server }}"
+    register: report
+    ignore_errors: yes
+
+  - shell: docker logs "{{ container_name }}" > "{{ logs_remote_directory }}/{{ group_names[0] }}/{{ container_name }}_error.log" 2>&1
+    delegate_to: "{{ backup_server }}"
+    when: (report.rc == 1)
+
+  - local_action: shell printf "<meta charset="utf-8">\n<div align="center" style="background-color:#F08080"><h3>Ошибка при формировании отчета, обрати внимание на лог "{{ logs_remote_directory }}/{{ group_names[0] }}/{{ container_name }}_error.log" на бэкапном сервере <i><b>{{ backup_server }}</b></i></h3></div>\n" >> "{{ report }}"
+    become: no
+    when: (report.rc == 1)
+  - fail: msg="Something wrong with report!"
+    when: (report.rc == 1)
+
+### Logging failed jobs ###
+  - local_action: shell echo "{{ group_names[0] }} {{ inventory_hostname }}" >> {{ logs_directory }}/failed.log
+    become: no
+    when: (untar|failed) or (report.rc == 1) or (container.stdout == "0") or (xtrabackup.failed == true)
+
+  - shell: echo "{{ container_name }}" >> {{ logs_remote_directory }}/docker_error.log
+    delegate_to: "{{ backup_server }}"
+    when: (untar|failed) or (report.rc == 1) or (container.stdout == "0") or (xtrabackup.failed == true)
+
+### Cleaning up if var "delete=1" is defined ###
+  - shell: docker rm -f "{{ container_name }}"
+    delegate_to: "{{ backup_server }}"
+    when: (delete is defined) or (untar|failed) or (report.rc == 1) or (container.stdout == "0") or (xtrabackup.failed == true)
+
+  - file: path="{{ check_directory }}" state=absent
+    delegate_to: "{{ backup_server }}"
+    when: (delete is defined) or (untar|failed) or (report.rc == 1) or (container.stdout == "0") or (xtrabackup.failed == true)
+
+  - file: path="{{ report_remote_directory }}/{{ container_name }}_source_db_list.txt" state=absent
+    delegate_to: "{{ backup_server }}"
+    when: (delete is defined) or (untar|failed) or (report.rc == 1) or (container.stdout == "0") or (xtrabackup.failed == true)
+
+  - file: path="{{ report_remote_directory }}/{{ container_name }}.txt" state=absent
+    delegate_to: "{{ backup_server }}"
+    when: (delete is defined) or (untar|failed) or (report.rc == 1) or (container.stdout == "0") or (xtrabackup.failed == true)
+
+  - name: make sure logdir exists on ansible host
+    local_action: file path="{{ logs_directory }}" state=directory mode=0755
+    become: no
+
+### Logging succeed jobs (bot.log generates by mysql_report_diff.sh on each backup server)###
+  - shell: cat {{ report_remote_directory }}/bot.log
+    delegate_to: "{{ backup_server }}"
+    register: bot
+    ignore_errors: yes
+
+  - local_action: lineinfile path="{{ logs_directory }}/bot.log" line="{{ bot.stdout }}" state=present create=yes mode=0644
+    become: no
+    when: (bot.rc == 0)
+
+### Exporting report.html file to localhost (report html file generates by mysql_report_diff.sh on each backup server) ###
+  - slurp: src="{{ report_remote_file }}"
+    register: report_raw
+    delegate_to: "{{ backup_server }}"
+    ignore_errors: yes
+  - set_fact: report_data="{{ report_raw['content']  | b64decode }}"
+    when: (report_raw.failed == false)
+
+  - local_action: lineinfile path="{{ report }}" state=present create=yes mode=0644 line="{{ report_data }}"
+    become: no
+    when: (report_raw.failed == false)
+
+### Cleaning up report and bot.log on backup server ###
+  - file: path="{{ report_remote_file }}" state=absent
+    delegate_to: "{{ backup_server }}"
+    when: (report_raw.failed == false)
+
+  - lineinfile: path="{{ report_remote_directory }}/bot.log" regexp='{{ group_names[0] }} {{ inventory_hostname }}' state=absent
+    delegate_to: "{{ backup_server }}"

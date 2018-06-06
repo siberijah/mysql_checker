@@ -1,0 +1,23 @@
+[mysqld]
+skip-grant-tables
+datadir=/var/lib/mysql
+socket=/tmp/mysql.sock
+default_storage_engine  = InnoDB
+innodb_buffer_pool_size = 2G
+innodb_buffer_pool_instances      = 8
+innodb-flush-log-at-trx-commit = 0
+innodb_log_buffer_size  = 16M
+innodb_file_per_table   = 1
+innodb_additional_mem_pool_size   = 16M
+innodb_file_format = barracuda
+innodb_max_dirty_pages_pct        = 80
+innodb_flush_log_at_trx_commit    = 0
+innodb_lock_wait_timeout = 900
+innodb_thread_concurrency = 10
+innodb_autoinc_lock_mode = 1
+innodb_fast_shutdown              = 1
+innodb_max_purge_lag              = 0
+innodb_open_files       = 1024
+innodb_io_capacity      = 400
+innodb_flush_method     = O_DIRECT
+symbolic-links=0

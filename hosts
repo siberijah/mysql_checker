@@ -1,0 +1,10 @@
+[client-one]
+client-one_mysql-prod ansible_ssh_host=10.0.0.2
+client-one_db-dev ansible_ssh_host=10.0.0.3
+
+[client-two]
+client-two_db-main ansible_ssh_host=10.0.1.2
+
+[backup]
+backup_one ansible_ssh_host=10.0.50.42
+backup_two ansible_ssh_host=10.0.100.42
